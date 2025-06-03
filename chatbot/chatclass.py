@@ -11,6 +11,10 @@ from langchain import SQLDatabase
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_sql_query_chain
 from langchain_openai.chat_models import ChatOpenAI  
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:
+    ChatGoogleGenerativeAI = None
 from langchain.schema import StrOutputParser
 from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
 from langchain.memory import ConversationBufferWindowMemory
@@ -23,22 +27,33 @@ load_dotenv(override=True)
 
 URI = os.getenv('URI')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-
-
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 
 class Text2SQL:
 
-    def __init__(self):
-
+    def __init__(self, provider="opeanai"):
         logger.info('Iniciar Chat')
-        
+        self.provider = provider.lower()
         self.tables = inspect(create_engine(URI)).get_table_names()
         self.db = SQLDatabase.from_uri(URI, sample_rows_in_table_info=2, include_tables=self.tables)
         self.sql_query = None
         self.last_sql_query = None
         self.context = None
         self.memory = ConversationBufferWindowMemory(k=4, return_messages=True)
-    
+        # Validación de API Key
+        if self.provider == "openai" and not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY no está definido en el .env")
+        if self.provider == "gemini":
+            if ChatGoogleGenerativeAI is None:
+                raise ImportError("langchain_google_genai no está instalado. Ejecuta: pip install langchain-google-genai")
+            if not GOOGLE_API_KEY:
+                raise ValueError("GOOGLE_API_KEY no está definido en el .env")
+
+    def _get_chat_model(self, **kwargs):
+        if self.provider == "gemini":
+            return ChatGoogleGenerativeAI(model="gemini-2.5-pro-preview-05-06", google_api_key=GOOGLE_API_KEY, **kwargs)
+        # Por defecto OpenAI
+        return ChatOpenAI(model='gpt-4.1', **kwargs)
 
     def create_sql_query(self, prompt: str) -> str:
 
@@ -52,7 +67,7 @@ class Text2SQL:
 
         logger.info('Creando query...')
 
-        input_model = ChatOpenAI(model='gpt-4.1', temperature=0)
+        input_model = self._get_chat_model(temperature=0)
 
         sql_prompt = PromptTemplate(template=sql_prompt_template)
                 
@@ -132,10 +147,10 @@ class Text2SQL:
         Return: cadena de langchain
         """
 
-        output_model = ChatOpenAI(model='gpt-4.1', streaming=True, max_retries=1, max_tokens=32768)
+        output_model = self._get_chat_model(streaming=True, max_retries=1, max_tokens=32768)
 
         final_prompt = ChatPromptTemplate.from_messages([('system', system_prompt_template),
-                                                         
+                                                        
                                                          MessagesPlaceholder(variable_name='history'),
                                                          
                                                          ('human', question_prompt_template)])
